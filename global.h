@@ -147,7 +147,9 @@ EXTERN MPI_Comm g_ts_comm, g_xs_comm;
 EXTERN MPI_Comm g_tr_comm;
 #endif
 
-EXTERN int g_ts_id, g_ts_nproc;
+// TODO: what's the meaning of g_ prefix on all these variables? Maybe "global" but idk if it refers
+// to global as a global (external) runtime variable or global in the context of referencing the
+// global lattice.
 EXTERN int g_tr_id, g_tr_nproc;
 EXTERN int g_xs_id, g_xs_nproc;
 EXTERN int g_nb_t_up, g_nb_t_dn;

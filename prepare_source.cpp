@@ -38,7 +38,7 @@
 namespace cvc {
 
 int prepare_volume_source ( double * const s, unsigned int const V ) {
-
+// TODO: This function prepares a full spinor field source by random generation.
   int status = 0;
   struct timeval ta, tb;
 

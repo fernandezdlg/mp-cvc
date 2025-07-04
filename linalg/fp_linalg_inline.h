@@ -1015,7 +1015,7 @@ static inline void _fp_eq_fp_spin_transposed(fermion_propagator_type _r, fermion
 
 
 static inline void _fp_eq_gamma_ti_fp(fermion_propagator_type _r, int _mu, fermion_propagator_type _s) {
-_fv_eq_gamma_ti_fv( (_r)[ 0], (_mu), (_s)[ 0] );
+_fv_eq_gamma_ti_fv( (_r)[ 0], (_mu), (_s)[ 0] );// psi_i gamma_i^(mu) 
 _fv_eq_gamma_ti_fv( (_r)[ 1], (_mu), (_s)[ 1] );
 _fv_eq_gamma_ti_fv( (_r)[ 2], (_mu), (_s)[ 2] );
 _fv_eq_gamma_ti_fv( (_r)[ 3], (_mu), (_s)[ 3] );

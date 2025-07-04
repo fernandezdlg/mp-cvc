@@ -982,6 +982,7 @@ int select_stochastic_timeslice_propagator ( double***eo_stochastic_source_allt,
  **********************************************************/
 int point_to_all_fermion_propagator_clover_full2eo ( double **eo_spinor_field_e, double **eo_spinor_field_o,  int op_id,
     int global_source_coords[4], double *gauge_field, double **mzz, double **mzzinv, int check_propagator_residual ) {
+// TODO: mzz is the matrix that applies the clover term on the spinor fields directly, this operation is diagonal on dirac and even odd
 
   const size_t sizeof_spinor_field    = _GSI( VOLUME )     * sizeof(double);
   const size_t sizeof_eo_spinor_field = _GSI( VOLUME / 2 ) * sizeof(double);
