@@ -1632,7 +1632,7 @@ Note that all these contractions ultimately are performing the following reducti
                      ***************************************************************************
                      ***************************************************************************/
 
-#if _CHARGED_LVC_LVC_TENSOR
+#if _CHARGED_LVC_LVC_TENSOR // FIXME: This section is never run in the current production code!
 // NOTE: This section is for charged lvc lvc tensors (preparations)
 
 // STEP 6.6.5: Prepare the contractions of charged lvc lvc tensors.
