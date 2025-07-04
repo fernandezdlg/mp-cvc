@@ -1787,7 +1787,7 @@ int contract_local_loop_stochastic_clover (double***eo_stochastic_propagator, do
  *       are initialized to zero here
  ***********************************************************/
 
-
+ 
 // STEP: contract local-local 2-point function, used in the 2pt correlation computations.
 // I think it's quite important to understand it.
 // NOTE: i = initial === s = source
@@ -1811,6 +1811,11 @@ int contract_local_loop_stochastic_clover (double***eo_stochastic_propagator, do
 // - tag: string tag for the output
 // - io_proc: integer indicating the I/O process
 
+// Basically constructs the 2-point correlation function with
+
+// field = -Tr [ gamma5 S_source^t gamma5 ( Gamma_sink S_target Gamma_source ) ]
+// mom_field = sum_vec{x} field(x) exp(i vec{p} vec{x})
+// save mom_field to aff.
 int contract_local_local_2pt_eo(
     double **sprop_list_e, double **sprop_list_o, double **tprop_list_e,
     double **tprop_list_o, const int *gamma_sink_list, int const gamma_sink_num,
@@ -1931,7 +1936,7 @@ int contract_local_local_2pt_eo(
           fp_aux, gamma_source_list[idsource], fp_aux, Vhalf);
 
       /* contract g5 fp_S_e^+ g5 fp_aux = g5 S^e^+ g5 (Gamma_f T^e Gamma_i) */
-      // complex field += trace ( gamma5 {tensor-index propagator^dagger tensor-index} gamma5 {tensor-index propagator} )
+      // complex field += trace ( gamma5  x propagator^dagger x  gamma5  x propagator} )
       co_field_pl_eq_tr_g5_ti_propagator_field_dagger_ti_g5_ti_propagator_field(
           (complex *)(conn_e[0]), fp_S_e, fp_aux, -1., Vhalf);
 
