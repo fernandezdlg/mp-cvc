@@ -1213,9 +1213,9 @@ Note that all these contractions ultimately are performing the following reducti
 
         // TODO: Understand contract_cvc_local_tensor_eo();
         contract_cvc_local_tensor_eo(cl_tensor_eo[0], cl_tensor_eo[1],
-                                                                &(eo_spinor_field[24]), &(eo_spinor_field[36]),
-                                                                &(eo_spinor_field[0]), &(eo_spinor_field[12]),
-                                                                gauge_field_with_phase);
+                                    &(eo_spinor_field[24]), &(eo_spinor_field[36]),
+                                    &(eo_spinor_field[0]), &(eo_spinor_field[12]),
+                                    gauge_field_with_phase);
 
         double ***cvc_tp = init_3level_dtable(g_sink_momentum_number, 16, 2 * T);
         if (cvc_tp == NULL) {
