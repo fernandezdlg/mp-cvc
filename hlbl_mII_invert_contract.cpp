@@ -82,17 +82,10 @@ typedef void (*QED_kernel_LX_ptr)( const double xv[4], const double yv[4], const
  * choice of KQED kernels
  * NOTE: Must be consistently updated between here and CUDA.
  ***********************************************************/
-#define kernel_n 3
+#define kernel_n 2
 #ifdef CUDA_N_QED_KERNEL
 #if CUDA_N_QED_KERNEL != kernel_n
-#error "Mismatching number of QED kernels between CUDA and CPU"
-#endif
-#endif
-
-#define kernel_n_geom 5
-#ifdef CUDA_N_QED_GEOM
-#if CUDA_N_QED_GEOM != kernel_n_geom
-#error "Mismatching number of QED kernel geometries between CUDA and CPU"
+#error "Mismatch between number of QED kernels with CUDA and CPU"
 #endif
 #endif
 
@@ -102,27 +95,14 @@ void QED_kernel_L0P4( const double xv[4], const double yv[4], const struct QED_k
 }
 
 QED_kernel_LX_ptr KQED_LX[kernel_n] = {
-  QED_kernel_L0,
   QED_kernel_L3,
-  QED_kernel_L0P4,
+  QED_kernel_L0P4
 };
+
 const char * KQED_NAME[kernel_n] = {
-  "L0", "L3", "LLambda0.4"
+  "L3",
+  "LLambda0.4"
 };
-const char * KQED_GEOM_NAME[kernel_n_geom] = {
-  "P2_0", "P2_1", "P3", "P4_0", "P4_1"
-};
-
-/***********************************************************
- * choice of charged currents or neutral currents (related by
- * isospin rotaiton).
- ***********************************************************/
-#ifdef ISO_CHARGED
-# define N_FLAV 1
-#else
-# define N_FLAV 2
-#endif
-
 
 /***********************************************************
  * max lattice side length
@@ -194,13 +174,13 @@ typedef double* g_prop_t; // device ptr
 typedef int* l2c_t; // device ptr
 typedef double* twopt_t; // device ptr
 inline prop_t init_prop(unsigned VOLUME) {
-  size_t len = N_FLAV * 12 * _GSI( (size_t)VOLUME );
+  size_t len = 2 * 12 * _GSI( (size_t)VOLUME );
   prop_t x;
   checkCudaErrors(cudaMalloc((void**)&x, len*sizeof(double)));
   return x;
 }
 inline g_prop_t init_g_prop(unsigned VOLUME) {
-  size_t len = N_FLAV * 4 * 12 * _GSI( (size_t)VOLUME );
+  size_t len = 2 * 4 * 12 * _GSI( (size_t)VOLUME );
   g_prop_t x;
   checkCudaErrors(cudaMalloc((void**)&x, len*sizeof(double)));
   return x;
@@ -228,9 +208,6 @@ inline void fini_twopt(twopt_t* x) {
 }
 
 inline void assign_prop(prop_t x, int iflavor, int i, double* input, unsigned VOLUME) {
-  if (iflavor >= N_FLAV) {
-    fprintf ( stderr, "[hlbl_mII_invert_contract] Bad index iflavor=%d %s %d\n", iflavor, __FILE__, __LINE__ );
-  }
   size_t sizeof_spinor_field = _GSI( (size_t)VOLUME ) * sizeof(double);
   size_t ind = (iflavor * 12 + i) * _GSI( (size_t)VOLUME );
   cudaMemcpy((void*)&x[ind], (void*)input, sizeof_spinor_field, cudaMemcpyHostToDevice);
@@ -238,16 +215,11 @@ inline void assign_prop(prop_t x, int iflavor, int i, double* input, unsigned VO
 // spinor_field_eq_gamma_ti_spinor_field ( g_fwd_src[iflavor][mu][ib], mu, fwd_src[iflavor][ib], VOLUME );
 // g5_phi ( g_fwd_src[iflavor][mu][ib], VOLUME );
 inline void g5_gmu_prop(g_prop_t y, prop_t x, int iflavor, int mu, int ib, unsigned VOLUME) {
-  if (iflavor >= N_FLAV) {
-    fprintf ( stderr, "[hlbl_mII_invert_contract] Bad index iflavor=%d %s %d\n", iflavor, __FILE__, __LINE__ );
-  }
   size_t len_prop_block = _GSI( (size_t)VOLUME );
   size_t ind_in = (iflavor * 12 + ib) * len_prop_block;
   size_t ind_out = (iflavor * 4 * 12 + mu * 12 + ib) * len_prop_block;
   cu_spinor_field_eq_gamma_ti_spinor_field(&y[ind_out], mu, &x[ind_in], len_prop_block);
-  #ifndef ISO_CHARGED
   cu_g5_phi(&y[ind_out], len_prop_block);
-  #endif
   /// TEST:
   // double* y_dev = (double*)malloc(len_prop_block * sizeof(double));
   // checkCudaErrors(cudaMemcpy(y_dev, &y[ind_out], len_prop_block * sizeof(double), cudaMemcpyDeviceToHost));
@@ -268,32 +240,33 @@ inline void g5_gmu_prop(g_prop_t y, prop_t x, int iflavor, int mu, int ib, unsig
  * gnu g5 D_y^+ g5 gmu U_y
  ***********************************************************/
 inline void compute_2p2_pieces(
-    const prop_t fwd_y, double ***** P1, double ****** P23x,
-    const int* gsw, int iflavor1, int iflavor2, int io_proc, int n_y, const int * gycoords,
+    const prop_t fwd_y, double ***** P1, double ****** P2, double ****** P3,
+    const int* gsw, int iflavor, int io_proc, int n_y, const int * gycoords,
     const double xunit[2], double ** spinor_work, QED_kernel_temps kqed_t,
     unsigned VOLUME, int Nconf) {
 
-  if (iflavor1 >= N_FLAV || iflavor2 >= N_FLAV) {
-    fprintf ( stderr, "[hlbl_mII_invert_contract] Bad index iflavor1=%d iflavor2=%d %s %d\n", iflavor1, iflavor2, __FILE__, __LINE__ );
-  }
-
-  struct timeval ta, tb, ta2, tb2;
+  struct timeval ta, tb;
   
 #if _WITH_TIMER
   gettimeofday ( &ta, (struct timezone *)NULL );
 #endif
 
   double* d_P1 = NULL;
-  double* d_P23x = NULL;
+  double* d_P2 = NULL;
+  double* d_P3 = NULL;
   const int Lmax = get_Lmax();
   const size_t n_P1 = 4 * 4 * 4 * Lmax;
-  const size_t n_P23x = n_y * kernel_n * kernel_n_geom * 4 * 4 * 4;
+  const size_t n_P2 = n_y * kernel_n * 4 * 4 * 4;
+  const size_t n_P3 = n_y * kernel_n * 4 * 4 * 4;
   const size_t sizeof_P1 = n_P1 * sizeof(double);
-  const size_t sizeof_P23x = n_P23x * sizeof(double);
+  const size_t sizeof_P2 = n_P2 * sizeof(double);
+  const size_t sizeof_P3 = n_P3 * sizeof(double);
   checkCudaErrors(cudaMalloc((void**)&d_P1, sizeof_P1));
-  checkCudaErrors(cudaMalloc((void**)&d_P23x, sizeof_P23x));
+  checkCudaErrors(cudaMalloc((void**)&d_P2, sizeof_P2));
+  checkCudaErrors(cudaMalloc((void**)&d_P3, sizeof_P3));
   checkCudaErrors(cudaMemset(d_P1, 0, sizeof_P1));
-  checkCudaErrors(cudaMemset(d_P23x, 0, sizeof_P23x));
+  checkCudaErrors(cudaMemset(d_P2, 0, sizeof_P2));
+  checkCudaErrors(cudaMemset(d_P3, 0, sizeof_P3));
   
   Coord d_proc_coords {
     .t = g_proc_coords[0],
@@ -319,54 +292,47 @@ inline void compute_2p2_pieces(
       (void*)d_gycoords, (const void*)gycoords_structs, n_y*sizeof(Coord), cudaMemcpyHostToDevice));
   free(gycoords_structs);
 
-#if _WITH_TIMER
-  gettimeofday ( &ta2, (struct timezone *)NULL );
-#endif
-
   cu_2p2_pieces(
-      d_P1, d_P23x, fwd_y, iflavor1, iflavor2, d_proc_coords, d_gsw, n_y, d_gycoords,
+      d_P1, d_P2, d_P3, fwd_y, iflavor, d_proc_coords, d_gsw, n_y, d_gycoords,
       d_xunit, kqed_t, global_geom, local_geom);
 
-#if _WITH_TIMER
-  checkCudaErrors(cudaDeviceSynchronize());
-  gettimeofday ( &tb2, (struct timezone *)NULL );
-  show_time ( &ta2, &tb2, "hlbl_mII_invert_contract", "2+2 pieces kernel", io_proc == 2 );
-#endif
-
-
   double* local_P1 = (double*)malloc(sizeof_P1);
-  double* local_P23x = (double*)malloc(sizeof_P23x);
-  double ***** all_P23x = init_5level_dtable ( n_y, kernel_n*kernel_n_geom, 4, 4, 4 );
-  if ( local_P1 == NULL || local_P23x == NULL || all_P23x == NULL )
+  double* local_P2 = (double*)malloc(sizeof_P2);
+  double* local_P3 = (double*)malloc(sizeof_P3);
+  double ***** all_P2 = init_5level_dtable ( n_y, kernel_n, 4, 4, 4 );
+  double ***** all_P3 = init_5level_dtable ( n_y, kernel_n, 4, 4, 4 );
+  if ( local_P1 == NULL || local_P2 == NULL || local_P3 == NULL ||
+       all_P2 == NULL || all_P3 == NULL )
   {
-    fprintf ( stderr, "Error alloc local_P1,23x or all_P23x\n" );
+    fprintf ( stderr, "Error alloc local_P1,2,3 or all_P2,3\n" );
     exit ( 57 );
   }
   
   checkCudaErrors(cudaMemcpy(
       (void*)local_P1, (const void*)d_P1, sizeof_P1, cudaMemcpyDeviceToHost));
   checkCudaErrors(cudaMemcpy(
-      (void*)local_P23x, (const void*)d_P23x, sizeof_P23x, cudaMemcpyDeviceToHost));
+      (void*)local_P2, (const void*)d_P2, sizeof_P2, cudaMemcpyDeviceToHost));
+  checkCudaErrors(cudaMemcpy(
+      (void*)local_P3, (const void*)d_P3, sizeof_P3, cudaMemcpyDeviceToHost));
 
 #ifdef HAVE_MPI
   // TODO: just MPI_Reduce?
-  if (iflavor1 != 0) {
-    fprintf ( stderr, "[hlbl_mII_invert_contract] Bad index iflavor=%d %s %d\n", iflavor1, __FILE__, __LINE__ );
-  }
-  if ( MPI_Allreduce(local_P1, P1[iflavor1][0][0][0], n_P1, MPI_DOUBLE, MPI_SUM, g_cart_grid)
+  if ( MPI_Allreduce(local_P1, P1[iflavor][0][0][0], n_P1, MPI_DOUBLE, MPI_SUM, g_cart_grid)
        != MPI_SUCCESS ) {
     if ( g_cart_id == 0 ) fprintf ( stderr, "[] Error from MPI_Allreduce %s %d\n", __FILE__, __LINE__ );
   }
-  if ( MPI_Allreduce(local_P23x, all_P23x[0][0][0][0], n_P23x, MPI_DOUBLE, MPI_SUM, g_cart_grid)
+  if ( MPI_Allreduce(local_P2, all_P2[0][0][0][0], n_P2, MPI_DOUBLE, MPI_SUM, g_cart_grid)
+       != MPI_SUCCESS ) {
+    if ( g_cart_id == 0 ) fprintf ( stderr, "[] Error from MPI_Allreduce %s %d\n", __FILE__, __LINE__ );
+  }
+  if ( MPI_Allreduce(local_P3, all_P3[0][0][0][0], n_P3, MPI_DOUBLE, MPI_SUM, g_cart_grid)
        != MPI_SUCCESS ) {
     if ( g_cart_id == 0 ) fprintf ( stderr, "[] Error from MPI_Allreduce %s %d\n", __FILE__, __LINE__ );
   }
 #else
-  if (iflavor1 != 0) {
-    fprintf ( stderr, "[hlbl_mII_invert_contract] Bad index iflavor=%d %s %d\n", iflavor1, __FILE__, __LINE__ );
-  }
-  memcpy((void*)P1[iflavor1][0][0][0], (void*)local_P1, sizeof_P1);
-  memcpy((void*)all_P23x[0][0][0][0], (void*)local_P23x, sizeof_P23x);
+  memcpy((void*)P1[iflavor][0][0][0], (void*)local_P1, sizeof_P1);
+  memcpy((void*)all_P2[0][0][0][0], (void*)local_P2, sizeof_P2);
+  memcpy((void*)all_P3[0][0][0][0], (void*)local_P3, sizeof_P3);
 #endif
 
   // interleave data into output array
@@ -374,24 +340,24 @@ inline void compute_2p2_pieces(
   {
     for ( int ikernel = 0; ikernel < kernel_n; ikernel++ )
     {
-      for ( int igeom = 0; igeom < kernel_n_geom; igeom++ )
-      {
-        if (iflavor1 != 0) {
-          fprintf ( stderr, "[hlbl_mII_invert_contract] Bad index iflavor=%d %s %d\n", iflavor1, __FILE__, __LINE__ );
-        }
-        memcpy(
-            (void*)P23x[yi][kernel_n_geom*ikernel + igeom][iflavor1][0][0],
-            (void*)all_P23x[yi][kernel_n_geom*ikernel + igeom][0][0], sizeof(double)*4*4*4);
-      }
+      memcpy(
+          (void*)P2[yi][ikernel][iflavor][0][0],
+          (void*)all_P2[yi][ikernel][0][0], sizeof(double)*4*4*4);
+      memcpy(
+          (void*)P3[yi][ikernel][iflavor][0][0],
+          (void*)all_P3[yi][ikernel][0][0], sizeof(double)*4*4*4);
     }
   }
 
   free(local_P1);
-  free(local_P23x);
-  fini_5level_dtable ( &all_P23x );
+  free(local_P2);
+  free(local_P3);
+  fini_5level_dtable ( &all_P2 );
+  fini_5level_dtable ( &all_P3 );
 
   checkCudaErrors(cudaFree(d_P1));
-  checkCudaErrors(cudaFree(d_P23x));
+  checkCudaErrors(cudaFree(d_P2));
+  checkCudaErrors(cudaFree(d_P3));
   checkCudaErrors(cudaFree(d_gycoords));
 
   if ( g_cart_id == 0 )
@@ -411,8 +377,8 @@ inline void compute_2p2_pieces(
  ***********************************************************/
 inline void compute_dzu_dzsu(
     const prop_t fwd_src, const prop_t fwd_y, double *** dzu, double *** dzsu,
-    double **** g_dzu, double **** g_dzsu, const int* gsx, int iflavor1, int iflavor2,
-    int io_proc, double ** spinor_work, unsigned VOLUME) {
+    double **** g_dzu, double **** g_dzsu, const int* gsx, int iflavor, int io_proc,
+    double ** spinor_work, unsigned VOLUME) {
 
   struct timeval ta, tb;
 
@@ -443,7 +409,7 @@ inline void compute_dzu_dzsu(
   Geom global_geom { .T = T_global, .LX = LX_global, .LY = LY_global, .LZ = LZ_global };
   Coord d_gsx = { .t = gsx[0], .x = gsx[1], .y = gsx[2], .z = gsx[3] };
   cu_dzu_dzsu(
-      d_dzu, d_dzsu, fwd_src, fwd_y, iflavor1, iflavor2, d_proc_coords, d_gsx,
+      d_dzu, d_dzsu, fwd_src, fwd_y, iflavor, d_proc_coords, d_gsx,
       global_geom, local_geom);
   checkCudaErrors(cudaDeviceSynchronize());
   checkCudaErrors(cudaMemcpy(
@@ -484,11 +450,7 @@ inline void compute_dzu_dzsu(
     double spinor1[24];
     for(int ia = 0; ia < 12; ia++ )
     {
-      #ifndef ISO_CHARGED
       _fv_eq_gamma_ti_fv ( spinor1, 5, dzu[k][ia] );
-      #else
-      _fv_eq_fv ( spinor1, dzu[k][ia] );
-      #endif
 
       for ( int mu = 0; mu < 4; mu++ )
       {
@@ -502,11 +464,7 @@ inline void compute_dzu_dzsu(
     double spinor1[24];
     for(int ia = 0; ia < 12; ia++ )
     {
-      #ifndef ISO_CHARGED
       _fv_eq_gamma_ti_fv ( spinor1, 5, dzsu[k][ia] );
-      #else
-      _fv_eq_fv ( spinor1, dzsu[k][ia] );
-      #endif
 
       for ( int mu = 0; mu < 4; mu++ )
       {
@@ -524,11 +482,8 @@ inline void compute_dzu_dzsu(
 inline void compute_4pt_contraction(
     const prop_t fwd_src, const prop_t fwd_y,
     double **** const g_dzu, double **** const g_dzsu,
-    const int* gsx, int iflavor1, int iflavor2, const double xunit[2], const int yv[4],
+    const int* gsx, int iflavor, const double xunit[2], const int yv[4],
     double kernel_sum[kernel_n], QED_kernel_temps kqed_t, unsigned VOLUME) {
-  if (iflavor1 >= N_FLAV || iflavor2 >= N_FLAV) {
-    fprintf ( stderr, "[hlbl_mII_invert_contract] Bad index iflavor1=%d iflavor2=%d %s %d\n", iflavor1, iflavor2, __FILE__, __LINE__ );
-  }  
   constexpr size_t n_g_dzu = 6 * 4 * 12 * 24;
   constexpr size_t n_g_dzsu = 4 * 4 * 12 * 24;
   size_t sizeof_g_dzu = n_g_dzu * sizeof(double);
@@ -558,8 +513,8 @@ inline void compute_4pt_contraction(
   Pair d_xunit = { .a = xunit[0], .b = xunit[1] };
 
   cu_4pt_contraction(
-      d_kernel_sum, d_g_dzu, d_g_dzsu, fwd_src, fwd_y, iflavor1, iflavor2,
-      d_proc_coords, d_gsx, d_xunit, d_yv, kqed_t, global_geom, local_geom);
+      d_kernel_sum, d_g_dzu, d_g_dzsu, fwd_src, fwd_y, iflavor, d_proc_coords,
+      d_gsx, d_xunit, d_yv, kqed_t, global_geom, local_geom);
 
   checkCudaErrors(cudaMemcpy(
       &kernel_sum[0], d_kernel_sum, kernel_n*sizeof(double), cudaMemcpyDeviceToHost));
@@ -579,10 +534,10 @@ typedef double**** g_prop_t;
 typedef int** l2c_t;
 typedef double*** twopt_t;
 inline prop_t init_prop(unsigned VOLUME) {
-  return init_3level_dtable ( N_FLAV, 12, _GSI( (size_t)VOLUME ) );
+  return init_3level_dtable ( 2, 12, _GSI( (size_t)VOLUME ) );
 }
 inline g_prop_t init_g_prop(unsigned VOLUME) {
-  return init_4level_dtable ( N_FLAV, 4, 12, _GSI( (size_t)VOLUME ) );
+  return init_4level_dtable ( 2, 4, 12, _GSI( (size_t)VOLUME ) );
 }
 inline twopt_t init_twopt(unsigned VOLUME) {
   return init_3level_dtable ( 4, 4, (size_t)VOLUME );
@@ -601,20 +556,12 @@ inline void fini_twopt(twopt_t* x) {
 }
 
 inline void assign_prop(prop_t x, int iflavor, int i, double* input, unsigned VOLUME) {
-  if (iflavor >= N_FLAV) {
-    fprintf ( stderr, "[hlbl_mII_invert_contract] Bad index iflavor=%d %s %d\n", iflavor, __FILE__, __LINE__ );
-  }
   size_t sizeof_spinor_field = _GSI( (size_t)VOLUME ) * sizeof(double);
   memcpy(x[iflavor][i], input, sizeof_spinor_field);
 }
 inline void g5_gmu_prop(g_prop_t y, prop_t x, int iflavor, int mu, int ib, unsigned VOLUME) {
-  if (iflavor >= N_FLAV) {
-    fprintf ( stderr, "[hlbl_mII_invert_contract] Bad index iflavor=%d %s %d\n", iflavor, __FILE__, __LINE__ );
-  }
   spinor_field_eq_gamma_ti_spinor_field ( y[iflavor][mu][ib], mu, x[iflavor][ib], VOLUME );
-  #ifndef ISO_CHARGED
   g5_phi ( y[iflavor][mu][ib], VOLUME );
-  #endif
 }
 // inline l2c_t init_lexic2coords(int ** g_lexic2coords, unsigned VOLUME) {
 //   return g_lexic2coords;
@@ -623,14 +570,10 @@ inline void g5_gmu_prop(g_prop_t y, prop_t x, int iflavor, int mu, int ib, unsig
 // }
 
 inline void compute_2p2_pieces(
-    const prop_t fwd_y, double ***** P1, double ****** P23x,
-    const int* gsw, int iflavor1, int iflavor2, int io_proc, int n_y, const int * gycoords,
+    const prop_t fwd_y, double ***** P1, double ****** P2, double ****** P3,
+    const int* gsw, int iflavor, int io_proc, int n_y, const int * gycoords,
     const double xunit[2], double ** spinor_work, QED_kernel_temps kqed_t,
     unsigned VOLUME, int Nconf) {
-
-  if (iflavor1 >= N_FLAV || iflavor2 >= N_FLAV) {
-    fprintf ( stderr, "[hlbl_mII_invert_contract] Bad index iflavor1=%d iflavor2=%d %s %d\n", iflavor1, iflavor2, __FILE__, __LINE__ );
-  }  
 
   struct timeval ta, tb;
   
@@ -654,24 +597,20 @@ inline void compute_2p2_pieces(
 #endif
         for ( unsigned int ix = 0; ix < VOLUME; ix++ )
         {
-          double * _u = fwd_y[iflavor1][ia] + _GSI(ix);
+          double * _u = fwd_y[iflavor][ia] + _GSI(ix);
           double * _t = spinor_work[0] + _GSI(ix);
           _fv_eq_gamma_ti_fv ( _t, mu, _u );
-          #ifndef ISO_CHARGED
           _fv_ti_eq_g5 ( _t );
-          #endif
           double * _s = spinor_work[1] + _GSI(ix);
           for ( int ib = 0; ib < 12; ib++ )
           {
-            double * _d = fwd_y[iflavor2][ib] + _GSI(ix);
+            double * _d = fwd_y[1-iflavor][ib] + _GSI(ix);
             complex w;
             _co_eq_fv_dag_ti_fv ( &w, _d, _t );
             _s[2*ib]   = w.re;
             _s[2*ib+1] = w.im;
           }
-          #ifndef ISO_CHARGED
           _fv_ti_eq_g5 ( _s );
-          #endif
           _fv_eq_gamma_ti_fv ( _t, nu, _s );
           // real part
           pimn[mu][nu][ix] += _t[2*ia];
@@ -741,18 +680,12 @@ inline void compute_2p2_pieces(
 
 #ifdef HAVE_MPI
   // TODO: just MPI_Reduce?
-  if (iflavor1 != 0) {
-    fprintf ( stderr, "[hlbl_mII_invert_contract] Bad index iflavor=%d %s %d\n", iflavor1, __FILE__, __LINE__ );
-  }
-  if ( MPI_Allreduce(local_P1[0][0][0], P1[iflavor1][0][0][0], n_P1, MPI_DOUBLE, MPI_SUM, g_cart_grid)
+  if ( MPI_Allreduce(local_P1[0][0][0], P1[iflavor][0][0][0], n_P1, MPI_DOUBLE, MPI_SUM, g_cart_grid)
        != MPI_SUCCESS ) {
     if ( g_cart_id == 0 ) fprintf ( stderr, "[] Error from MPI_Allreduce %s %d\n", __FILE__, __LINE__ );
   }
 #else
-  if (iflavor1 != 0) {
-    fprintf ( stderr, "[hlbl_mII_invert_contract] Bad index iflavor=%d %s %d\n", iflavor1, __FILE__, __LINE__ );
-  }
-  memcpy((void*)P1[iflavor1][0][0][0], (void*)local_P1[0][0][0], sizeof(double)*n_P1);
+  memcpy((void*)P1[iflavor][0][0][0], (void*)local_P1[0][0][0], sizeof(double)*n_P1);
 #endif
 
   fini_4level_dtable ( &local_P1 );
@@ -772,15 +705,19 @@ inline void compute_2p2_pieces(
    * P3_{rsn}(y)
    *   = sum_x (L_[r,s];mln(x+y,y) Pi_{ml}(x)
    ***********************************************************/
-  int n_P23x = n_y * kernel_n * kernel_n_geom * 4 * 4 * 4;
-  double ***** local_P23x = init_5level_dtable ( n_y, kernel_n*kernel_n_geom, 4, 4, 4 );
-  double ***** all_P23x = init_5level_dtable ( n_y, kernel_n*kernel_n_geom, 4, 4, 4 );
-  if ( local_P23x == NULL || all_P23x == NULL )
+  int n_P2 = n_y * kernel_n * 4 * 4 * 4;
+  int n_P3 = n_y * kernel_n * 4 * 4 * 4;
+  double ***** local_P2 = init_5level_dtable ( n_y, kernel_n, 4, 4, 4 );
+  double ***** local_P3 = init_5level_dtable ( n_y, kernel_n, 4, 4, 4 );
+  double ***** all_P2 = init_5level_dtable ( n_y, kernel_n, 4, 4, 4 );
+  double ***** all_P3 = init_5level_dtable ( n_y, kernel_n, 4, 4, 4 );
+  if ( local_P2 == NULL || local_P3 == NULL || all_P2 == NULL || all_P3 == NULL )
   {
-    fprintf ( stderr, "Error alloc local_P23x or all_P23x\n" );
+    fprintf ( stderr, "Error alloc local_P2,3 or all_P2,3\n" );
     exit ( 57 );
   }
-  memset ( (void*)local_P23x[0][0][0][0], 0, sizeof(double)*n_P23x );
+  memset ( (void*)local_P2[0][0][0][0], 0, sizeof(double)*n_P2 );
+  memset ( (void*)local_P3[0][0][0][0], 0, sizeof(double)*n_P3 );
 
   
 #ifdef HAVE_OPENMP
@@ -791,10 +728,9 @@ inline void compute_2p2_pieces(
     double kerv1[6][4][4][4] KQED_ALIGN ;
     double kerv2[6][4][4][4] KQED_ALIGN ;
     double kerv3[6][4][4][4] KQED_ALIGN ;
-    double kerv4[6][4][4][4] KQED_ALIGN ;
 
     // For P2: y = (gsy - gsw)
-    // For P3: y' = (gsw - gsy)
+    // For P3: y = (gsw - gsy)
     // We define y = (gsy - gsw) and use -y as input for P3.
     int const * gsy = &gycoords[4*yi];
     int const y[4] = {
@@ -822,12 +758,6 @@ inline void compute_2p2_pieces(
         xv[2] * xunit[0],
         xv[3] * xunit[0] };
 
-      double const xm_minus[4] = {
-        -xv[0] * xunit[0],
-        -xv[1] * xunit[0],
-        -xv[2] * xunit[0],
-        -xv[3] * xunit[0] };
-
       double const ym[4] = {
         yv[0] * xunit[0],
         yv[1] * xunit[0],
@@ -840,67 +770,45 @@ inline void compute_2p2_pieces(
         -yv[2] * xunit[0],
         -yv[3] * xunit[0] };
 
-      // int const x_mi_y[4] = {
-      //   (x[0] - y[0] + T_global) % T_global,
-      //   (x[1] - y[1] + LX_global) % LX_global,
-      //   (x[2] - y[2] + LY_global) % LY_global,
-      //   (x[3] - y[3] + LZ_global) % LZ_global };
-      // int xv_mi_yv[4];
-      // site_map_zerohalf(xv_mi_yv, x_mi_y);
-      // double const xm_mi_ym[4] = {
-      //   xv_mi_yv[0] * xunit[0],
-      //   xv_mi_yv[1] * xunit[0],
-      //   xv_mi_yv[2] * xunit[0],
-      //   xv_mi_yv[3] * xunit[0] };
+      int const x_mi_y[4] = {
+        (x[0] - y[0] + T_global) % T_global,
+        (x[1] - y[1] + LX_global) % LX_global,
+        (x[2] - y[2] + LY_global) % LY_global,
+        (x[3] - y[3] + LZ_global) % LZ_global };
+      int xv_mi_yv[4];
+      site_map_zerohalf(xv_mi_yv, x_mi_y);
+
       double const xm_mi_ym[4] = {
-        xm[0] - ym[0],
-        xm[1] - ym[1],
-        xm[2] - ym[2],
-        xm[3] - ym[3] };
-      double const ym_mi_xm[4] = {
-        ym[0] - xm[0],
-        ym[1] - xm[1],
-        ym[2] - xm[2],
-        ym[3] - xm[3] };
+        xv_mi_yv[0] * xunit[0],
+        xv_mi_yv[1] * xunit[0],
+        xv_mi_yv[2] * xunit[0],
+        xv_mi_yv[3] * xunit[0] };
 
       for ( int ikernel = 0; ikernel < kernel_n; ikernel++ )
       {
         KQED_LX[ikernel]( xm, ym,             kqed_t, kerv1 );
         KQED_LX[ikernel]( ym, xm,             kqed_t, kerv2 );
         KQED_LX[ikernel]( xm_mi_ym, ym_minus, kqed_t, kerv3 );
-        KQED_LX[ikernel]( ym_mi_xm, xm_minus, kqed_t, kerv4 );
         for( int k = 0; k < 6; k++ )
         {
           int const rho   = idx_comb[k][0];
           int const sigma = idx_comb[k][1];
-          for ( int nu = 0; nu < 4; nu++ )
+          for ( int mu = 0; mu < 4; mu++ )
           {
-            #if kernel_n_geom != 5
-            #error "Number of QED kernel geometries does not match implementation"
-            #endif
-            for ( int mu = 0; mu < 4; mu++ )
+            for ( int nu = 0; nu < 4; nu++ )
             {
               for ( int lambda = 0; lambda < 4; lambda++ )
               {
-                // P2_0
-                local_P23x[yi][ikernel*kernel_n_geom + 0][rho][sigma][nu] +=
-                    kerv1[k][mu][nu][lambda] * pimn[mu][lambda][ix];
-                // P2_1
-                local_P23x[yi][ikernel*kernel_n_geom + 1][rho][sigma][nu] +=
-                    kerv2[k][nu][mu][lambda] * pimn[mu][lambda][ix];
-                // P3
-                local_P23x[yi][ikernel*kernel_n_geom + 2][rho][sigma][nu] +=
+
+                local_P2[yi][ikernel][rho][sigma][nu] +=
+                    (kerv1[k][mu][nu][lambda] + kerv2[k][nu][mu][lambda]) *
+                    pimn[mu][lambda][ix];
+
+                local_P3[yi][ikernel][rho][sigma][nu] +=
                     kerv3[k][mu][lambda][nu] * pimn[mu][lambda][ix];
-                // P4_0
-                local_P23x[yi][ikernel*kernel_n_geom + 3][rho][sigma][nu] +=
-                    kerv4[k][nu][lambda][mu] * pimn[mu][lambda][ix];
+
               }
             }
-            // P4_1
-            local_P23x[yi][ikernel*kernel_n_geom + 4][rho][sigma][nu] =
-                (yv[rho]-xv[rho]) * local_P23x[yi][ikernel*kernel_n_geom + 3][rho][sigma][nu];
-            local_P23x[yi][ikernel*kernel_n_geom + 4][sigma][rho][nu] =
-                (yv[sigma]-xv[sigma]) * (-local_P23x[yi][ikernel*kernel_n_geom + 3][rho][sigma][nu]);
           }
         }
       }
@@ -908,12 +816,17 @@ inline void compute_2p2_pieces(
   }
 
 #ifdef HAVE_MPI
-  if ( MPI_Allreduce(local_P23x[0][0][0][0], all_P23x[0][0][0][0], n_P23x, MPI_DOUBLE, MPI_SUM, g_cart_grid)
+  if ( MPI_Allreduce(local_P2[0][0][0][0], all_P2[0][0][0][0], n_P2, MPI_DOUBLE, MPI_SUM, g_cart_grid)
+       != MPI_SUCCESS ) {
+    if ( g_cart_id == 0 ) fprintf ( stderr, "[] Error from MPI_Allreduce %s %d\n", __FILE__, __LINE__ );
+  }
+  if ( MPI_Allreduce(local_P3[0][0][0][0], all_P3[0][0][0][0], n_P3, MPI_DOUBLE, MPI_SUM, g_cart_grid)
        != MPI_SUCCESS ) {
     if ( g_cart_id == 0 ) fprintf ( stderr, "[] Error from MPI_Allreduce %s %d\n", __FILE__, __LINE__ );
   }
 #else
-  memcpy((void*)all_P23x[0][0][0][0], (void*)local_P23x[0][0][0][0], sizeof(double)*n_P23x);
+  memcpy((void*)all_P2[0][0][0][0], (void*)local_P2[0][0][0][0], sizeof(double)*n_P2);
+  memcpy((void*)all_P3[0][0][0][0], (void*)local_P3[0][0][0][0], sizeof(double)*n_P3);
 #endif
 
   // interleave data into output array
@@ -921,20 +834,19 @@ inline void compute_2p2_pieces(
   {
     for ( int ikernel = 0; ikernel < kernel_n; ikernel++ )
     {
-      for (int igeom = 0; igeom < kernel_n_geom; igeom++ )
-      {
-        if (iflavor1 != 0) {
-          fprintf ( stderr, "[hlbl_mII_invert_contract] Bad index iflavor=%d %s %d\n", iflavor1, __FILE__, __LINE__ );
-        }
-        memcpy(
-            (void*)P23x[yi][ikernel*kernel_n_geom + igeom][iflavor1][0][0],
-            (void*)all_P23x[yi][ikernel*kernel_n_geom + igeom][0][0], sizeof(double)*4*4*4);
-      }
+      memcpy(
+          (void*)P2[yi][ikernel][iflavor][0][0],
+          (void*)all_P2[yi][ikernel][0][0], sizeof(double)*4*4*4);
+      memcpy(
+          (void*)P3[yi][ikernel][iflavor][0][0],
+          (void*)all_P3[yi][ikernel][0][0], sizeof(double)*4*4*4);
     }
   }
 
-  fini_5level_dtable ( &local_P23x );
-  fini_5level_dtable ( &all_P23x );
+  fini_5level_dtable ( &local_P2 );
+  fini_5level_dtable ( &local_P3 );
+  fini_5level_dtable ( &all_P2 );
+  fini_5level_dtable ( &all_P3 );
 
 #if _WITH_TIMER
   gettimeofday ( &tb, (struct timezone *)NULL );
@@ -950,8 +862,8 @@ inline void compute_2p2_pieces(
  ***********************************************************/
 inline void compute_dzu_dzsu(
     const prop_t fwd_src, const prop_t fwd_y, double *** dzu, double *** dzsu,
-    double **** g_dzu, double **** g_dzsu, const int* gsx, int iflavor1, int iflavor2,
-    int io_proc, double ** spinor_work, unsigned VOLUME) {
+    double **** g_dzu, double **** g_dzsu, const int* gsx, int iflavor, int io_proc,
+    double ** spinor_work, unsigned VOLUME) {
 
   struct timeval ta, tb;
 
@@ -971,7 +883,7 @@ inline void compute_dzu_dzsu(
 #endif
       for ( unsigned int iz = 0; iz < VOLUME; iz++ )
       {
-        double * const _u = fwd_src[iflavor1][ia] + _GSI(iz);
+        double * const _u = fwd_src[iflavor][ia] + _GSI(iz);
         double * const _s = spinor_work[0] + _GSI(iz);
         double * const _t = spinor_work[1] + _GSI(iz);
 
@@ -985,21 +897,17 @@ inline void compute_dzu_dzsu(
         site_map_zerohalf ( zv, z );
 
         _fv_eq_gamma_ti_fv ( _t, sigma, _u );
-        #ifndef ISO_CHARGED
         _fv_ti_eq_g5 ( _t );
-        #endif
         _fv_eq_fv_ti_re ( _s, _t,  zv[rho] );
         _fv_eq_gamma_ti_fv ( _t, rho, _u );
-        #ifndef ISO_CHARGED
         _fv_ti_eq_g5 ( _t );
-        #endif
         _fv_eq_fv_pl_fv_ti_re ( _s, _s, _t, -zv[sigma] );
       }
 
       for(int ib = 0; ib < 12; ib++ )
       {
         complex w = {0.,0.};
-        spinor_scalar_product_co ( &w, fwd_y[iflavor2][ib], spinor_work[0], VOLUME );
+        spinor_scalar_product_co ( &w, fwd_y[1-iflavor][ib], spinor_work[0], VOLUME );
 
         dzu[k][ia][2*ib  ] = w.re;
         dzu[k][ia][2*ib+1] = w.im;
@@ -1014,11 +922,9 @@ inline void compute_dzu_dzsu(
 
       for(int ib = 0; ib < 12; ib++ )
       {
-        spinor_field_eq_gamma_ti_spinor_field ( spinor_work[0], sigma, fwd_src[iflavor1][ia], VOLUME );
-        #ifndef ISO_CHARGED
+        spinor_field_eq_gamma_ti_spinor_field ( spinor_work[0], sigma, fwd_src[iflavor][ia], VOLUME );
         g5_phi ( spinor_work[0], VOLUME );
-        #endif
-        spinor_scalar_product_co ( &w, fwd_y[iflavor2][ib], spinor_work[0], VOLUME );
+        spinor_scalar_product_co ( &w, fwd_y[1-iflavor][ib], spinor_work[0], VOLUME );
         dzsu[sigma][ia][2*ib  ] = w.re;
         dzsu[sigma][ia][2*ib+1] = w.im;
       }
@@ -1044,11 +950,7 @@ inline void compute_dzu_dzsu(
     double spinor1[24];
     for(int ia = 0; ia < 12; ia++ )
     {
-      #ifndef ISO_CHARGED
       _fv_eq_gamma_ti_fv ( spinor1, 5, dzu[k][ia] );
-      #else
-      _fv_eq_fv ( spinor1, dzu[k][ia] );
-      #endif
 
       for ( int mu = 0; mu < 4; mu++ )
       {
@@ -1065,11 +967,7 @@ inline void compute_dzu_dzsu(
     double spinor1[24];
     for(int ia = 0; ia < 12; ia++ )
     {
-      #ifndef ISO_CHARGED
       _fv_eq_gamma_ti_fv ( spinor1, 5, dzsu[k][ia] );
-      #else
-      _fv_eq_fv ( spinor1, dzsu[k][ia] );
-      #endif
 
       for ( int mu = 0; mu < 4; mu++ )
       {
@@ -1087,12 +985,8 @@ inline void compute_dzu_dzsu(
 inline void compute_4pt_contraction(
     const prop_t fwd_src, const prop_t fwd_y,
     double **** const g_dzu, double **** const g_dzsu,
-    const int* gsx, int iflavor1, int iflavor2, const double xunit[2], const int yv[4],
+    const int* gsx, int iflavor, const double xunit[2], const int yv[4],
     double kernel_sum[kernel_n], QED_kernel_temps kqed_t, unsigned VOLUME) {
-
-  if (iflavor1 >= N_FLAV || iflavor2 >= N_FLAV) {
-    fprintf ( stderr, "[hlbl_mII_invert_contract] Bad index iflavor1=%d iflavor2=%d %s %d\n", iflavor1, iflavor2, __FILE__, __LINE__ );
-  }  
 
 #ifdef HAVE_OPENMP
 #pragma omp parallel
@@ -1150,7 +1044,7 @@ inline void compute_4pt_contraction(
     // {
     //   for ( int ia = 0; ia < 12; ia++ )
     //   {
-    //     double * const _d = fwd_src[iflavor2][ia] + _GSI(ix);
+    //     double * const _d = fwd_src[1-iflavor][ia] + _GSI(ix);
     //     double * const _t = &local_g_fwd_src[(mu * 12 + ia) * 12 * 2];
     //     _fv_eq_gamma_ti_fv ( _t, mu, _d );
     //     _fv_ti_eq_g5 ( _t );
@@ -1159,28 +1053,25 @@ inline void compute_4pt_contraction(
 
     for ( int ib = 0; ib < 12; ib++)
     {
-      double * const _u = fwd_y[iflavor1][ib] + _GSI(ix);
+      double * const _u = fwd_y[iflavor][ib] + _GSI(ix);
 
       for ( int mu = 0; mu < 4; mu++ )
       {
 
         for ( int ia = 0; ia < 12; ia++)
         {
-          double * const _d = fwd_src[iflavor2][ia] + _GSI(ix);
+          double * const _d = fwd_src[1-iflavor][ia] + _GSI(ix);
           double * const _t = spinor1;
           _fv_eq_gamma_ti_fv ( _t, mu, _d );
-          #ifndef ISO_CHARGED
           _fv_ti_eq_g5 ( _t );
-          #endif
           // double * const _t = &local_g_fwd_src[(mu * 12 + ia) * 12 * 2];
 
-          // double * const _d = g_fwd_src_2[iflavor1][mu][ia] + _GSI(ix);
+          // double * const _d = g_fwd_src_2[1-iflavor][mu][ia] + _GSI(ix);
           complex w;
 
           _co_eq_fv_dag_ti_fv ( &w, _t, _u );
 
           /* -1 factor due to (g5 gmu)^+ = -g5 gmu */
-          // TODO: do we remove the minus for ISO_CHARGED?
           dxu[mu][ib][2*ia  ] = -w.re;
           dxu[mu][ib][2*ia+1] = -w.im;
         }
@@ -1192,11 +1083,7 @@ inline void compute_4pt_contraction(
     {
       for ( int ib = 0; ib < 12; ib++)
       {
-        #ifndef ISO_CHARGED
         _fv_eq_gamma_ti_fv ( spinor1, 5, dxu[mu][ib] );
-        #else
-        _fv_eq_fv ( spinor1, dxu[mu][ib] );
-        #endif
         for ( int lambda = 0; lambda < 4; lambda++ )
         {
           _fv_eq_gamma_ti_fv ( g_dxu[lambda][mu][ib], lambda, spinor1 );
@@ -1358,7 +1245,7 @@ inline void compute_4pt_contraction(
                           rank,
                           xv[0], xv[1], xv[2], xv[3],
                           yv[0], yv[1], yv[2], yv[3],
-                          iflavor1,
+                          iflavor,
                           ikernel,
                           mu, nu, lambda, idx_comb[k][0], idx_comb[k][1],
                           kerv1[k][mu][nu][lambda],
@@ -1400,7 +1287,7 @@ inline void compute_4pt_contraction(
                         ysign_comb[isign][1],
                         ysign_comb[isign][2],
                         ysign_comb[isign][3],
-                        iflavor1,
+                        iflavor,
                         rank,
                         mu, nu, lambda, idx_comb[k][0], idx_comb[k][1],
                         corr_I[k][mu][nu][2*lambda  ], corr_I[k][mu][nu][2*lambda+1] );
@@ -1464,8 +1351,8 @@ void usage() {
 int main(int argc, char **argv) {
 
   double const mmuon = 105.6583745 /* MeV */  / 197.3269804 /* MeV fm */;
-  double alat[2] = { 0.07957, 0.00013 };  /* fm */
-
+  double const alat[2] = {0.06821, 0.00013};  /* fm */
+  /*a_values = [0.07957, 0.06821, 0.05685, 0.04892]*/
   int c;
   int filename_set = 0;
   int exitstatus;
@@ -1485,11 +1372,8 @@ int main(int argc, char **argv) {
   MPI_Init(&argc, &argv);
 #endif
 
-  while ((c = getopt(argc, argv, "ch?a:f:y:z:")) != -1) {
+  while ((c = getopt(argc, argv, "ch?f:y:z:")) != -1) {
     switch (c) {
-    case 'a':
-      alat[0] = atof ( optarg );
-      break;
     case 'f':
       strcpy(filename, optarg);
       filename_set=1;
@@ -1740,18 +1624,19 @@ int main(int argc, char **argv) {
    * P1_{rho,sigma,nu}
    ***********************************************************/
   const int Lmax = get_Lmax();
-  double ***** P1 = init_5level_dtable ( 1, 4, 4, 4, Lmax );
+  double ***** P1 = init_5level_dtable ( 2, 4, 4, 4, Lmax );
   if ( P1 == NULL )
   {
     fprintf(stderr, "[hlbl_mII_invert_contract] Error from init_Xlevel_dtable  %s %d\n", __FILE__, __LINE__ );
     EXIT(123);
   }
-  memset ( (void*)P1[0][0][0][0], 0, sizeof(double)*1*4*4*4*Lmax );
+  memset ( (void*)P1[0][0][0][0], 0, sizeof(double)*2*4*4*4*Lmax );
 
   /***********************************************************
-   * P2/3/x_{rho,sigma,nu} will be allocated later
+   * P2/3_{rho,sigma,nu} will be allocated later
    ***********************************************************/
-  double ****** P23x; // = init_6level_dtable ( MAX_SOURCE_PAIR_NUMBER, kernel_n*kernel_n_geom, 2, 4, 4, 4 );
+  double ****** P2; // = init_6level_dtable ( MAX_SOURCE_PAIR_NUMBER, kernel_n, 2, 4, 4, 4 );
+  double ****** P3; // = init_6level_dtable ( MAX_SOURCE_PAIR_NUMBER, kernel_n, 2, 4, 4, 4 );
 
   /***********************************************************
    * unit for x, y
@@ -1836,7 +1721,7 @@ int main(int argc, char **argv) {
     /***********************************************************
      * local kernel sum
      ***********************************************************/
-    double *** kernel_sum = init_3level_dtable ( kernel_n, N_FLAV, ymax + 1 );
+    double *** kernel_sum = init_3level_dtable ( kernel_n, 2, ymax + 1 );
     if ( kernel_sum == NULL ) 
     {
       fprintf(stderr, "[hlbl_mII_invert_contract] Error from kqed initialise, status was %d %s %d\n", exitstatus, __FILE__, __LINE__);
@@ -1847,7 +1732,7 @@ int main(int argc, char **argv) {
     * forward proapgators from source
     ***********************************************************/
 
-    for ( int iflavor = 0; iflavor < N_FLAV; iflavor ++ ) 
+    for ( int iflavor = 0; iflavor <= 1; iflavor ++ ) 
     {
       for ( int i = 0; i < 12; i++ ) 
       {
@@ -1960,7 +1845,7 @@ int main(int argc, char **argv) {
 #if _WITH_TIMER
       gettimeofday ( &ta, (struct timezone *)NULL );
 #endif
-      for ( int iflavor = 0; iflavor < N_FLAV; iflavor++ ) 
+      for ( int iflavor = 0; iflavor <= 1; iflavor++ ) 
       {
  
         /***********************************************************
@@ -2020,16 +1905,13 @@ int main(int argc, char **argv) {
 
 
       /***********************************************************
-       * 2+2 pieces (P1, P2, P3, ...) per source y and target yp
+       * 2+2 pieces (P1, P2, P3) per source y and target yp
        ***********************************************************/
-      // Two-point function is identical between TM flavors, so we only use one
-      // combination
-      for ( int iflavor1 = 0; iflavor1 <= 0; iflavor1++ ) {
-        #ifdef ISO_CHARGED
-        int iflavor2 = iflavor1;
-        #else
-        int iflavor2 = 1 - iflavor1;
-        #endif
+      // Two-point function is identical between TM flavors, so only use one
+      // TODO: remove iflavor index from P1, P2, P3
+      // NOTE: need to move block to function for convenient control flow if
+      // we remove the iflavor loop.
+      for ( int iflavor = 0; iflavor <= 0; iflavor++ ) {
         int ipair = -1;
         for ( int jpair = 0; jpair < g_source_pair_tgt_number; jpair++ )
         {
@@ -2051,27 +1933,28 @@ int main(int argc, char **argv) {
         
         int n_yp = g_source_pair_targets_number[ipair];
         const int * gyp = (const int*) g_source_pair_targets_list[ipair];
-        P23x = init_6level_dtable ( n_yp, kernel_n*kernel_n_geom, 1, 4, 4, 4 );
-        if ( P23x == NULL )
+        P2 = init_6level_dtable ( n_yp, kernel_n, 2, 4, 4, 4 );
+        P3 = init_6level_dtable ( n_yp, kernel_n, 2, 4, 4, 4 );
+        if ( P2 == NULL || P3 == NULL )
         {
           fprintf(stderr, "[hlbl_mII_invert_contract] Error from init_Xlevel_dtable  %s %d\n", __FILE__, __LINE__ );
           EXIT(123);
         }
 
         /**********************************************************
-         * compute P1, P2, P3, ...
+         * compute P1, P2, P3
          **********************************************************/
         compute_2p2_pieces(
-            fwd_y, P1, P23x, gsy, iflavor1, iflavor2, io_proc, n_yp, gyp,
+            fwd_y, P1, P2, P3, gsy, iflavor, io_proc, n_yp, gyp,
             xunit, spinor_work, kqed_t, VOLUME, Nconf);
 
         /**********************************************************
-         * write P1, P2, P3, ...
+         * write P1, P2, P3
          **********************************************************/
         if ( io_proc == 2 )
         {
           int ncdim = 5;
-          int cdim[5] = { 1, 4, 4, 4, Lmax };
+          int cdim[5] = { 2, 4, 4, 4, Lmax };
           char key[100];
           sprintf (key, "/P1/t%dx%dy%dz%d", gsy[0], gsy[1], gsy[2], gsy[3] );
 
@@ -2085,43 +1968,50 @@ int main(int argc, char **argv) {
         if ( io_proc == 2 )
         {
           int ncdim = 4;
-          int cdim[4] = { 1, 4, 4, 4 };
+          int cdim[4] = { 2, 4, 4, 4 };
           char key[100];
           for ( int ikernel = 0; ikernel < kernel_n; ikernel++ )
           {
             for ( int iyp = 0; iyp < n_yp; iyp++ )
             {
-              for ( int igeom = 0; igeom < kernel_n_geom; igeom++ )
-              {
-                sprintf (key, "/%s/t%dx%dy%dz%d/t%dx%dy%dz%d/%s",
-                         KQED_GEOM_NAME[igeom], gsy[0], gsy[1], gsy[2], gsy[3],
-                         gyp[4*iyp+0], gyp[4*iyp+1], gyp[4*iyp+2], gyp[4*iyp+3],
-                         KQED_NAME[ikernel] );
-
-                exitstatus = write_h5_contraction (
-                    P23x[iyp][kernel_n_geom*ikernel+igeom][0][0][0], NULL, output_filename, key,
+              sprintf (key, "/P2/t%dx%dy%dz%d/t%dx%dy%dz%d/%s",
+                       gsy[0], gsy[1], gsy[2], gsy[3],
+                       gyp[4*iyp+0], gyp[4*iyp+1], gyp[4*iyp+2], gyp[4*iyp+3],
+                       KQED_NAME[ikernel] );
+            
+              exitstatus = write_h5_contraction (
+                  P2[iyp][ikernel][0][0][0], NULL, output_filename, key,
                   "double", ncdim, cdim );
-                if ( exitstatus != 0 )
-                {
-                  fprintf (stderr, "[hlbl_mII_invert_contract] Error from write_h5_contraction  %s %d\n", __FILE__, __LINE__ );
-                  EXIT(12);
-                }
+              if ( exitstatus != 0 )
+              {
+                fprintf (stderr, "[hlbl_mII_invert_contract] Error from write_h5_contraction  %s %d\n", __FILE__, __LINE__ );
+                EXIT(12);
+              }
+
+              sprintf (key, "/P3/t%dx%dy%dz%d/t%dx%dy%dz%d/%s",
+                       gsy[0], gsy[1], gsy[2], gsy[3],
+                       gyp[4*iyp+0], gyp[4*iyp+1], gyp[4*iyp+2], gyp[4*iyp+3],
+                       KQED_NAME[ikernel] );
+            
+              exitstatus = write_h5_contraction (
+                  P3[iyp][ikernel][0][0][0], NULL, output_filename, key,
+                  "double", ncdim, cdim );
+              if ( exitstatus != 0 )
+              {
+                fprintf (stderr, "[hlbl_mII_invert_contract] Error from write_h5_contraction  %s %d\n", __FILE__, __LINE__ );
+                EXIT(12);
               }
             }
           }
         }
 
-        fini_6level_dtable( &P23x );
+        fini_6level_dtable( &P2 );
+        fini_6level_dtable( &P3 );
         
-      } /* end of P1, P2, P3, ... */
+      } /* end of P1, P2, P3 */
       
-      for ( int iflavor1 = 0; iflavor1 < N_FLAV; iflavor1++ ) 
+      for ( int iflavor = 0; iflavor <= 1; iflavor++ ) 
       {
-        #ifdef ISO_CHARGED
-        int iflavor2 = iflavor1;
-        #else
-        int iflavor2 = 1 - iflavor1;
-        #endif
         /***********************************************************
          * D_y^+ z g5 gsigma U_src
          ***********************************************************/
@@ -2144,7 +2034,7 @@ int main(int argc, char **argv) {
          * SUM OVER Z
          ***********************************************************/
         compute_dzu_dzsu(
-            fwd_src, fwd_y, dzu, dzsu, g_dzu, g_dzsu, gsx, iflavor1, iflavor2, io_proc,
+            fwd_src, fwd_y, dzu, dzsu, g_dzu, g_dzsu, gsx, iflavor, io_proc,
             spinor_work, VOLUME);
 
 #if 0
@@ -2160,8 +2050,8 @@ int main(int argc, char **argv) {
               double const g5sign = 1. - 2. * ( (ib/3) > 1 );
 
               fprintf (
-                  stdout, "[test_dzu] %d seq fl %d %d yv %3d %3d %3d %3d, k %d isnk %2d isrc %2d   %25.16e %25.16e\n",
-                  g_cart_id, iflavor1, iflavor2, yv[0], yv[1], yv[2], yv[3], k, ib, ia,
+                  stdout, "[test_dzu] %d seq fl %d yv %3d %3d %3d %3d, k %d isnk %2d isrc %2d   %25.16e %25.16e\n",
+                  g_cart_id, iflavor, yv[0], yv[1], yv[2], yv[3], k, ib, ia,
                   g5sign * dzu[k][ia][2*ib  ], g5sign * dzu[k][ia][2*ib+1] );
             }}
         }
@@ -2183,8 +2073,8 @@ int main(int argc, char **argv) {
               double const g5sign = 1. - 2. * ( (ib/3) > 1 );
 
               fprintf (
-                  stdout, "[test_dzsu] %d seq fl %d %d yv %3d %3d %3d %3d, sigma %d isnk %2d isrc %2d   %25.16e %25.16e\n",
-                  g_cart_id, iflavor1, iflavor2, yv[0], yv[1], yv[2], yv[3], sigma, ib, ia,
+                  stdout, "[test_dzsu] %d seq fl %d yv %3d %3d %3d %3d, sigma %d isnk %2d isrc %2d   %25.16e %25.16e\n",
+                  g_cart_id, iflavor, yv[0], yv[1], yv[2], yv[3], sigma, ib, ia,
                   g5sign * dzsu[sigma][ia][2*ib  ], g5sign * dzsu[sigma][ia][2*ib+1] );
             }
           }
@@ -2204,13 +2094,13 @@ int main(int argc, char **argv) {
         gettimeofday ( &ta, (struct timezone *)NULL );
 #endif
 
-        double local_kernel_sum[kernel_n] = { 0 };
+        double local_kernel_sum[kernel_n];
         compute_4pt_contraction(
-            fwd_src, fwd_y, g_dzu, g_dzsu, gsx, iflavor1, iflavor2, xunit, yv,
+            fwd_src, fwd_y, g_dzu, g_dzsu, gsx, iflavor, xunit, yv,
             local_kernel_sum, kqed_t, VOLUME);
         for ( int ikernel = 0; ikernel < kernel_n; ikernel++ )
         {
-          kernel_sum[ikernel][iflavor1][iy] = local_kernel_sum[ikernel];
+          kernel_sum[ikernel][iflavor][iy] = local_kernel_sum[ikernel];
         }
 
 #if _WITH_TIMER
@@ -2229,9 +2119,9 @@ int main(int argc, char **argv) {
         for (int ikernel = 0; ikernel < kernel_n; ++ikernel) {
           fprintf(
               stdout,
-              "# [hlbl_mII_invert_contract] kernel_sum iflavor=%d,%d iy=%d %d: %f\n",
-              iflavor1, iflavor2, iy, ikernel,
-              kernel_sum[ikernel][iflavor1][iy]);
+              "# [hlbl_mII_invert_contract] kernel_sum iflavor=%d iy=%d %d: %f\n",
+              iflavor, iy, ikernel,
+              kernel_sum[ikernel][iflavor][iy]);
         }
         /***********************************************************
          * END OF TEST
@@ -2256,7 +2146,7 @@ int main(int argc, char **argv) {
     /***********************************************************
      * sum over MPI processes
      ***********************************************************/
-    int const nitem = kernel_n * N_FLAV * ( ymax + 1 );
+    int const nitem = kernel_n * 2 * ( ymax + 1 );
     double * mbuffer = init_1level_dtable ( nitem );
 
     memcpy ( mbuffer, kernel_sum[0][0], nitem * sizeof ( double ) );
@@ -2275,7 +2165,7 @@ int main(int argc, char **argv) {
      ***********************************************************/
     if (g_cart_id == 0) {
       for (int jker = 0; jker < kernel_n; ++jker) {
-        for (int iflavor = 0; iflavor < N_FLAV; ++iflavor)  {
+        for (int iflavor = 0; iflavor < 2; ++iflavor)  {
           for (int iy = 0; iy < ymax+1; ++iy) {
             fprintf(
                 stdout,
@@ -2296,7 +2186,7 @@ int main(int argc, char **argv) {
     if ( io_proc == 2 )
     {
       int ncdim = 2;
-      int cdim[2] = { N_FLAV, ymax+1 };
+      int cdim[2] = { 2, ymax+1 };
       char key[100];
       for ( int ikernel = 0; ikernel < kernel_n; ikernel++ )
       {
