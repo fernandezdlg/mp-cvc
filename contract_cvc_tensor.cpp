@@ -1487,7 +1487,13 @@ int contract_local_loop_stochastic_clover (double***eo_stochastic_propagator, do
 int contract_local_local_2pt_eo ( double**sprop_list_e, double**sprop_list_o, double**tprop_list_e, double**tprop_list_o, 
     const int * gamma_sink_list, int const gamma_sink_num, const int * gamma_source_list, int const gamma_source_num, int (*momentum_list)[3], int momentum_number,  struct AffWriter_s*affw, char*tag,
     int io_proc ) {
-  
+
+  /* if momentum_number == 0 print no momentum present, and return */
+  if ( momentum_number == 0 ) {
+    if ( g_cart_id == 0 ) fprintf(stdout, "# [contract_local_local_2pt_eo] no momentum present, return without contraction\n");
+    return(0);
+  }
+
   const unsigned int Vhalf = VOLUME / 2;
   const unsigned int VOL3 = LX * LY * LZ;
   const unsigned int VOL3half = VOL3 / 2;
